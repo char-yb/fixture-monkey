@@ -6,8 +6,6 @@ plugins {
 dependencies {
     api(projects.fixtureMonkeyApi)
     api(libs.javax.validation.api)
-    api(libs.hibernate.validator6)
-    api(libs.jakarta.el3)
 
     testImplementation(projects.fixtureMonkey)
     testImplementation(libs.junit.jupiter.engine)
@@ -15,6 +13,7 @@ dependencies {
     testImplementation(libs.assertj.core)
     testImplementation(libs.lombok)
     testAnnotationProcessor(libs.lombok)
+    testRuntimeOnly(libs.hibernate.validator6)
+    testRuntimeOnly(libs.jakarta.el3)
 }
-
 
