@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: dorny/test-reporter@v3
         with:
-          artifact: test-results            # artifact name
+          artifact: /test-results-jdk-.*/   # artifact name regex, one artifact per JDK matrix job
           name: Summary Test Reports                  # Name of the check run which will be created
           path: '**/build/test-results/test/TEST-*.xml'                     # Path to test results (inside artifact .zip)
           reporter: java-junit              # Format of test results
