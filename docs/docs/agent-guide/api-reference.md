@@ -118,6 +118,41 @@ From `com.navercorp.fixturemonkey.customizer.Values`:
 - `Values.just(value)` — set the value as-is. Without it, `set` decomposes the object and regenerates its properties, which matters for immutable and inlined types.
 - `Values.unique(supplier)` — draw a distinct value per generation, for uniquely-constrained columns.
 
+## Constraining generated values
+
+Random does not have to mean arbitrary. These are the APIs that narrow what generation produces, in ascending order of scope. For *which* one to reach for, see [Constrain the values you did not pin](./writing-tests#constrain-the-values-you-did-not-pin) — the short version is to take the widest scope that fits, so the fewest places restate the rule.
+
+**Per property, on the builder**
+
+| Call | Effect |
+| :--- | :--- |
+| `set(selector, arbitrary)` | Any jqwik `Arbitrary`: `Arbitraries.strings().numeric().ofLength(12)`, `.alpha()`, `.ascii()`, `ofMinLength`/`ofMaxLength`, `Arbitraries.longs().greaterThan(100)` |
+| `set(value)` | No selector — constrains the root of the builder. This is the form `register` uses |
+| `set(selector, Values.unique(supplier))` | A distinct value per generation |
+| `thenApply((sample, builder) -> ...)` | Derive one property from another after generation |
+| `setPostCondition(selector, type, predicate)` | Rejection sampling. Last resort: it regenerates until the predicate passes, so it is slow and can fail to converge |
+
+**Per type, on the instance**
+
+| Call | Effect |
+| :--- | :--- |
+| `register(Class, fixture -> builder)` | A default builder for the type and its subtypes, applied wherever the type appears |
+| `registerExactType(Class, ...)` / `registerAssignableType(Class, ...)` | The same, with the matcher stated explicitly |
+| `register(MatcherOperator, priority)` | Arbitrary matching, with priority — lower number wins, and equal priorities are picked randomly |
+| `registerGroup(Class...)` | Collect many registrations in one class: every method that takes a single `FixtureMonkey` parameter and returns an `ArbitraryBuilder<T>` is registered for `T` |
+
+**Project-wide, through a plugin**
+
+| Plugin | Effect |
+| :--- | :--- |
+| `new JakartaValidationPlugin()`, `new JavaxValidationPlugin()` | Generation honours Bean Validation annotations already on the production fields — `@Size`, `@Min`, `@Max`, `@Digits`, `@Pattern`, `@Email`, `@NotBlank`, `@NotEmpty`, `@Past`, `@Future`. Prefer this to restating the same rule in test code |
+| `new JqwikPlugin().javaTypeArbitraryGenerator(...)` | Override the default generator for built-in types by implementing `strings()`, `integers()`, `longs()`, `characters()` and so on. `monkeyStrings()` returns a `MonkeyStringArbitrary`, whose `filterCharacter(predicate)` restricts the character set; the default already excludes ISO control characters |
+| `new JqwikPlugin().javaTimeTypeArbitraryGenerator(...)` | The same for `java.time` and `Date` — override `localDates()`, `instants()`, `zonedDateTimes()` and the rest. Defaults span one year either side of now |
+| `new JqwikPlugin().javaArbitraryResolver(...)` / `.javaTimeArbitraryResolver(...)` | Change how constraints are *applied* to those arbitraries, rather than which arbitrary is used |
+| `javaConstraintGenerator(...)`, `pushJavaConstraintGeneratorCustomizer(...)` | Teach Fixture Monkey a project's own constraint annotations |
+| `new DataFakerPlugin()` | Realistic values — names, addresses, and similar |
+
+An unsatisfiable constraint is not silent: generation retries and then throws `RetryableFilterMissException`, naming the property that could not be produced.
 ## How objects get constructed
 
 This is the most common source of "Fixture Monkey does not work on my class". Different class shapes are constructed in completely different ways, and the mechanism is chosen at three levels of scope. Work from the narrowest scope that solves the problem.

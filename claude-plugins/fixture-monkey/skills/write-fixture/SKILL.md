@@ -106,6 +106,8 @@ Pin with the narrowest API that expresses the constraint. Take the first row tha
 | A whole object placed as-is, not decomposed | `set(selector, Values.just(value))` |
 | A cross-field constraint nothing above expresses | `setPostCondition` — last resort, rejection sampling |
 
+A value that merely has to be *legal* is not a pin — it is a domain constraint, and it belongs somewhere the next test does not have to repeat it. See *Constrain the values you did not pin* below.
+
 Select properties type-safely. String paths break silently on rename, and an unmatched path is ignored rather than reported.
 
 ```java
@@ -168,6 +170,34 @@ An intermittent failure has two causes, and they are handled differently:
 - **A property that forces the outcome was left random** → pin it, back to step 5.
 - **The production code has a real bug on inputs nobody considered** → **report it; do not fix it.** Leave the failing test in place and state what input triggers it. Do not pin the property to silence it, and do not reach for `fixed()` — a test adjusted to pass over a real defect is worse than no test.
 
+### Constrain the values you did not pin
+
+Leaving a property random does not mean leaving it *arbitrary*. A code that must be twelve numeric digits, an amount that cannot be negative, a date the code requires to be in the past — a fully random value violates the domain, and the test fails on data no caller could ever produce. That is not a defect the test found; it is setup that is missing.
+
+The question is rarely *how* to constrain a value. It is **where the constraint belongs.** Take the highest row that applies — the higher it sits, the fewer places restate it:
+
+| The constraint is | Put it | How |
+| :--- | :--- | :--- |
+| **Already declared in production code** as an annotation | A plugin, once | `new JakartaValidationPlugin()` (or `JavaxValidationPlugin`) — generation then honours `@Size`, `@Min`, `@Digits`, `@Pattern`, `@Email`, `@NotBlank`, `@Past` |
+| True of a domain type everywhere | The instance | `register(TrackingCode.class, ...)`, `registerExactType`, `registerGroup(...)` to collect many |
+| The project's default for a built-in type | A plugin, once | `new JqwikPlugin().javaTypeArbitraryGenerator(...)` overriding `strings()` / `integers()`; `.javaTimeTypeArbitraryGenerator(...)` for date and time ranges |
+| Realistic-looking values — names, addresses | A plugin, once | `new DataFakerPlugin()` |
+| True only for this case | The builder | `set(selector, Arbitraries.strings().numeric().ofLength(12))` |
+| A relationship between two properties | The builder | `thenApply`; `setPostCondition` only when nothing else expresses it |
+| That the value must not repeat | The builder | `set(selector, Values.unique(supplier))` |
+
+**Prefer the annotation plugin to everything below it.** The constraint is then stated once, where it already lives, and every test tracks it when it changes. Restating `@Size(min = 5, max = 10)` as `ofMinLength(5).ofMaxLength(10)` in a test creates a second source of truth that nothing keeps in sync — the same mistake as retyping a fixture's literal into a stub.
+
+`register` takes a builder for the whole type, so the argument-less `set` overload constrains it without naming a property:
+
+```java
+.register(TrackingCode.class, fixture -> fixture.giveMeBuilder(TrackingCode.class)
+    .set(Arbitraries.strings().numeric().ofLength(12)))
+```
+
+Note where this lands against the placement rule under *Creating the object*: a tracking-code format the assertion never mentions is configuration the outcome does **not** depend on, so it is the kind that may be shared — unlike the introspector and the null policy.
+
+An unsatisfiable constraint does not fail silently. Generation retries, then throws `RetryableFilterMissException` naming the property — which is also what a test gets for pinning against the domain, such as `setNull` on a `@NotBlank` field.
 ## Creating the object
 
 Pick the entry point by what the case needs:
@@ -313,6 +343,8 @@ These are what make narrow pinning pay off:
 | Reaching for `FailoverIntrospector` by default | Pick the one matching introspector; override odd types individually |
 | A helper that just renames a selector | Inline `javaGetter(Type::prop)` — share at the `ArbitraryBuilder` level only |
 | Configuration the outcome depends on hidden in a shared holder | Declare the `FixtureMonkey` in the test class |
+| Restating a production validation annotation as an `Arbitrary` in the test | Add the validation plugin and let the annotation drive generation |
+| `setPostCondition` to filter a domain rule the type always obeys | `register` the type, so no test repeats it |
 | Retyping a fixture's literal into a stub or assertion | Read it off the sampled object |
 | `get(35)` against a fixed-size result | `getLast()` or `size() - 1` |
 

@@ -139,6 +139,36 @@ Never tune a test into passing when the defect it found is real. That is worse t
 
 To reproduce a specific failure while diagnosing it, fix the seed with `@Seed(1234L)` from `fixture-monkey-junit-jupiter`. The extension logs the seed of any failing test, so a CI failure can be replayed locally. Remove or keep the annotation deliberately — a permanently seeded test no longer explores anything.
 
+## Constrain the values you did not pin
+
+Leaving a property random does not mean leaving it arbitrary. Plenty of properties are not what a case is about and still cannot hold any value at all: a code that must be twelve numeric digits, an amount that cannot be negative, a date the code requires to be in the past. Generate one freely and the test fails on data no caller could produce — which looks like flakiness, but is missing setup.
+
+This is a different question from step 5. Step 5 asks which properties *force the outcome*; those get pinned. This asks what makes the rest **legal**, and the answer is almost never a pin — it is a constraint, and the only real decision is **where it belongs.** Take the highest row that applies, because the higher it sits, the fewer places restate it:
+
+| The constraint is | Where it belongs | How |
+| :--- | :--- | :--- |
+| **Already declared in production code** as an annotation | A plugin, declared once | `new JakartaValidationPlugin()` or `new JavaxValidationPlugin()`. Generation then honours `@Size`, `@Min`, `@Digits`, `@Pattern`, `@Email`, `@NotBlank`, `@Past` and the rest |
+| True of a domain type wherever it appears | The `FixtureMonkey` instance | `register(TrackingCode.class, ...)`, `registerExactType(...)`, or `registerGroup(...)` to collect many in one class |
+| The project's default for a built-in type | A plugin, declared once | `new JqwikPlugin().javaTypeArbitraryGenerator(...)`, overriding `strings()` or `integers()`; `.javaTimeTypeArbitraryGenerator(...)` for date and time ranges |
+| That values should look realistic — names, addresses | A plugin, declared once | `new DataFakerPlugin()` |
+| True only for the case at hand | The builder | `set(selector, Arbitraries.strings().numeric().ofLength(12))` |
+| A relationship between two properties | The builder | `thenApply`, as in step 5; `setPostCondition` only when nothing else expresses it |
+| That the value must not repeat | The builder | `set(selector, Values.unique(supplier))` |
+
+**Prefer the annotation plugin to every row below it.** When the rule is already written on the production field, the plugin makes generation obey it — stated once, in the place that owns it, and every test follows it when it changes. Restating `@Size(min = 5, max = 10)` as `ofMinLength(5).ofMaxLength(10)` inside a test is the same mistake as retyping a fixture's literal into a stub: two sources of truth, and nothing that fails when they drift.
+
+`register` supplies a builder for the whole type, so the argument-less `set` overload constrains it without naming a property:
+
+```java
+FixtureMonkey.builder()
+    .register(TrackingCode.class, fixture -> fixture.giveMeBuilder(TrackingCode.class)
+        .set(Arbitraries.strings().numeric().ofLength(12)))
+    .build();
+```
+
+Note how this sits against the placement rule in [The layer above](#the-layer-above-the-fixturemonkey-instance). A tracking-code format the assertion never mentions is configuration the outcome does *not* depend on, so it is the kind that may reasonably be shared across test classes — unlike the introspector and the null policy, which decide whether a pin lands at all.
+
+One thing this does not do is fail quietly. When a constraint cannot be satisfied, generation retries and then throws `RetryableFilterMissException`, naming the property. A test that pins against the domain — `setNull` on a `@NotBlank` field — fails there, not somewhere downstream.
 ## Stubs follow the same rule
 
 For a service-level test, most of the code is stubbing collaborators rather than building fixtures. The pin/leave-random rule applies there unchanged:
@@ -248,6 +278,8 @@ private ArbitraryBuilder<Order> paidOrder() {
 | Constructing objects by hand alongside Fixture Monkey | The hand-built one must be updated on every field change | Generate both |
 | A helper that just renames a selector | Costs more lines than it saves and hides the type at the call site | Inline `javaGetter(Type::prop)` |
 | A shared `FixtureMonkey` holder the test's outcome depends on | The reader cannot tell why a pin landed, or why a field is never null, without opening another file | Declare the instance in the test class |
+| Restating a production validation annotation as an `Arbitrary` in the test | Two sources of truth for one rule, and nothing fails when they drift | Add the validation plugin and let the annotation drive generation |
+| `setPostCondition` to filter a rule the domain type always obeys | Rejection sampling per test for something true everywhere | `register` the type once |
 | Retyping a fixture's literal into a stub or assertion | Two sources of truth, and nothing catches the drift | Read it off the sampled object |
 | `get(35)` against a fixed-size result | Couples the case to a production constant | `getLast()` or `size() - 1` |
 | Adding a plugin or introspector to fix one test | Usually a signal the type needs an `instantiate` or a `register` instead | See [How objects get constructed](./api-reference#how-objects-get-constructed) |
