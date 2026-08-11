@@ -218,18 +218,21 @@ private static JavaGetterMethodPropertySelector<Order, Integer> quantity() {
 
 Selectors stay inline.
 
-**Above the builder there is one more layer: the `FixtureMonkey` instance itself.** Introspector choice, plugins, and null policy are project-wide decisions, not per-test ones. If two test classes both configure a `FixtureMonkey`, that configuration belongs in a shared holder:
+**Above the builder there is one more layer: the `FixtureMonkey` instance itself.** Introspector choice, plugins, and null policy decide what a generated object actually looks like — and whether a pin lands at all. That makes them part of the test's context, not infrastructure to be tucked away.
+
+**Keep the instance in the test class**, so the file answers "why does this object look like this" on its own. A `FixtureMonkey` is immutable configuration and is safe in a `static final` field, unlike `ArbitraryBuilder`:
 
 ```java
-public final class TestFixtures {
-    public static final FixtureMonkey MONKEY = FixtureMonkey.builder()
+class OrderServiceTest {
+    private static final FixtureMonkey FIXTURE = FixtureMonkey.builder()
         .objectIntrospector(ConstructorPropertiesArbitraryIntrospector.INSTANCE)
         .defaultNotNull(true)
         .build();
-}
 ```
 
-Before adding a `FixtureMonkey.builder()` block to a test, look for an existing one in the module and reuse it. Copying a ten-line setup into a third test file is the signal that it should have been extracted — and `ArbitraryBuilder` sharing does not solve it, because the duplication is in the instance, not the builder. Unlike `ArbitraryBuilder`, a `FixtureMonkey` is safe to hold in a static field.
+The rule that settles it: **the test file shows every configuration choice its outcome depends on.** A reader who must open `TestFixtures` to discover that `defaultNotNull(true)` is on cannot tell why the test passes. Extracting a shared holder is fine for configuration the outcome does not depend on — a uniform plugin set, a project-wide `javaTimeTypeArbitraryGenerator` — and wrong for the introspector and the null policy.
+
+Four duplicated lines per test class is the price, and it is the cheaper side of the trade: that duplication is read far more often than it is edited.
 
 ### When the object will not build
 
@@ -309,6 +312,7 @@ These are what make narrow pinning pay off:
 | Fixing a bug the new test exposed | Report it and leave the test failing |
 | Reaching for `FailoverIntrospector` by default | Pick the one matching introspector; override odd types individually |
 | A helper that just renames a selector | Inline `javaGetter(Type::prop)` — share at the `ArbitraryBuilder` level only |
+| Configuration the outcome depends on hidden in a shared holder | Declare the `FixtureMonkey` in the test class |
 | Retyping a fixture's literal into a stub or assertion | Read it off the sampled object |
 | `get(35)` against a fixed-size result | `getLast()` or `size() - 1` |
 

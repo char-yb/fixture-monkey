@@ -182,18 +182,21 @@ Selectors are one-liners and stay inline.
 
 ### The layer above: the `FixtureMonkey` instance
 
-Introspector choice, plugins, and null policy are project-wide decisions, not per-test ones, and `ArbitraryBuilder` sharing cannot deduplicate them — the duplication lives in the instance. When a second test class needs the same configuration, extract it:
+Introspector choice, plugins, and null policy decide what a generated object looks like, and whether a pin lands at all. They are not infrastructure sitting underneath the test — they are the reason the test's objects have the shape they have. So keep the instance in the test class:
 
 ```java
-public final class TestFixtures {
-    public static final FixtureMonkey MONKEY = FixtureMonkey.builder()
+class OrderServiceTest {
+    private static final FixtureMonkey FIXTURE = FixtureMonkey.builder()
         .objectIntrospector(ConstructorPropertiesArbitraryIntrospector.INSTANCE)
         .defaultNotNull(true)
         .build();
-}
 ```
 
-Before adding a `FixtureMonkey.builder()` block to a test, look for an existing one in the module and reuse it. A ten-line setup copied into a third test file is the signal it should have been extracted. Unlike `ArbitraryBuilder`, a `FixtureMonkey` is immutable configuration and is safe to hold in a static field.
+A `FixtureMonkey` is immutable configuration, so a `static final` field is safe here — the hazard described above applies to `ArbitraryBuilder`, not to the instance.
+
+The rule that settles where configuration lives: **the test file shows every choice its outcome depends on.** Someone reading a failing test should not have to open a `TestFixtures` holder to discover that `defaultNotNull(true)` is on, or which introspector decides whether `set(javaGetter(Order::getId), 1L)` is honoured or silently dropped. Extracting a shared holder is right for configuration the outcome does not depend on — a plugin set that is uniform across the module, a project-wide `javaTimeTypeArbitraryGenerator` — and wrong for the introspector and the null policy.
+
+The cost is a few duplicated lines per test class. That is the cheaper side of the trade, because those lines are read far more often than they are edited, and a test that explains itself in one file is worth more than a deduplicated one that does not.
 
 ## When not to use Fixture Monkey
 
@@ -209,7 +212,7 @@ Use a constructor directly only when all of these hold:
 
 Anything that looks like an entity, a DTO, or a request or response payload fails the first condition, however few fields it has today. Generate those.
 
-Two notes on the cost side. The setup is a per-module cost, not a per-test one — once it lives in a shared `TestFixtures`, comparing a generated test against a hand-written one by line count overstates the difference. And when in doubt, generate: over-using Fixture Monkey costs a few lines, while under-using it costs an edit to every call site the day the type grows.
+Two notes on the cost side. The setup is a per-class cost paid once, not a per-test one, so comparing a generated test against a hand-written one by counting lines in the file overstates the difference. And when in doubt, generate: over-using Fixture Monkey costs a few lines, while under-using it costs an edit to every call site the day the type grows.
 
 The judgement is per type, not per file. A test can construct a small value object directly and still generate the aggregate it goes into.
 
@@ -244,6 +247,7 @@ private ArbitraryBuilder<Order> paidOrder() {
 | `setPostCondition` where `set` would do | Rejection sampling; slow, and can fail to converge | `set` with an `Arbitrary` |
 | Constructing objects by hand alongside Fixture Monkey | The hand-built one must be updated on every field change | Generate both |
 | A helper that just renames a selector | Costs more lines than it saves and hides the type at the call site | Inline `javaGetter(Type::prop)` |
+| A shared `FixtureMonkey` holder the test's outcome depends on | The reader cannot tell why a pin landed, or why a field is never null, without opening another file | Declare the instance in the test class |
 | Retyping a fixture's literal into a stub or assertion | Two sources of truth, and nothing catches the drift | Read it off the sampled object |
 | `get(35)` against a fixed-size result | Couples the case to a production constant | `getLast()` or `size() - 1` |
 | Adding a plugin or introspector to fix one test | Usually a signal the type needs an `instantiate` or a `register` instead | See [How objects get constructed](./api-reference#how-objects-get-constructed) |
