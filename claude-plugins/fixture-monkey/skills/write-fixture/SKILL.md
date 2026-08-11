@@ -103,10 +103,28 @@ Pin with the narrowest API that expresses the constraint. Take the first row tha
 | Only that it is present / absent | `setNotNull` / `setNull` |
 | A specific collection size | `size`, `minSize`, `maxSize` — **before** setting elements |
 | A value derived from another | `thenApply` |
-| A whole object placed as-is, not decomposed | `set(selector, Values.just(value))` |
+| That *this exact instance* survives, undecomposed | `set(selector, Values.just(value))` — only when fixing it is genuinely required |
 | A cross-field constraint nothing above expresses | `setPostCondition` — last resort, rejection sampling |
 
 A value that merely has to be *legal* is not a pin — it is a domain constraint, and it belongs somewhere the next test does not have to repeat it. See *Constrain the values you did not pin* below.
+
+**Two ordering rules, both silent when broken.**
+
+`size` before element writes, or the elements land on a collection that may be too short and are dropped.
+
+And on **overlapping paths the last call wins** — including across a parent and its child, where it decides whether the parent exists at all:
+
+```java
+.setNull(javaGetter(Order::getCustomer))                                  // parent nulled
+.set(javaGetter(Order::getCustomer).into(Customer::getName), "Kim")       // parent revived, name set
+
+.set(javaGetter(Order::getCustomer).into(Customer::getName), "Kim")
+.setNull(javaGetter(Order::getCustomer))                                  // parent null; the name pin is gone
+```
+
+The first order is what makes a shared base fixture work — null a subtree there, revive just the part a case needs. The second loses the pin with no exception. A helper that returns a builder gives the right order for free, since the case's own calls come after.
+
+**`Values.just` is for when the value must not be rebuilt — nothing else.** Plain `set` decomposes the object and regenerates its properties, so a pre-built list comes back with different element values and no exception is raised. That silence is a symptom to recognise, not a reason to reach for `Values.just` by default: if the assertion does not depend on those inner values, plain `set` is correct and leaves the rest random, which is the point. Reach for `Values.just` only when the exact instance is what the case is about — the same restraint that applies to `fixed()`.
 
 Select properties type-safely. String paths break silently on rename, and an unmatched path is ignored rather than reported.
 
@@ -198,6 +216,7 @@ The question is rarely *how* to constrain a value. It is **where the constraint 
 Note where this lands against the placement rule under *Creating the object*: a tracking-code format the assertion never mentions is configuration the outcome does **not** depend on, so it is the kind that may be shared — unlike the introspector and the null policy.
 
 An unsatisfiable constraint does not fail silently. Generation retries, then throws `RetryableFilterMissException` naming the property — which is also what a test gets for pinning against the domain, such as `setNull` on a `@NotBlank` field.
+
 ## Creating the object
 
 Pick the entry point by what the case needs:
@@ -246,7 +265,16 @@ private static JavaGetterMethodPropertySelector<Order, Integer> quantity() {
 }
 ```
 
-Selectors stay inline.
+The test is not "is it inline" but **does the call site still show which property is being selected.** `set(quantity(), 10)` fails it — a name was swapped for a name and nothing was gained. Factoring out a **path prefix that many pins repeat** passes it, because the leaf and the intermediate types stay visible at the call site:
+
+```java
+private static final JavaGetterMethodPropertySelector<JiraIssueResponse, JiraFields> FIELDS =
+    javaGetter(JiraIssueResponse::fields);
+
+.set(FIELDS.into(JiraFields::status).into(JiraIssueStatus::name), "Open")
+```
+
+That constant is safe to share: `into` returns a **new** selector wrapping the receiver rather than mutating it, so nothing accumulates across tests the way it would on an `ArbitraryBuilder`. Both types you need are public — `JavaGetterMethodPropertySelector<T, U>` for a root and `JoinJavaGetterPropertySelector<T, U>` for a chained one — even though `into` itself is inherited from a non-public interface.
 
 **Above the builder there is one more layer: the `FixtureMonkey` instance itself.** Introspector choice, plugins, and null policy decide what a generated object actually looks like — and whether a pin lands at all. That makes them part of the test's context, not infrastructure to be tucked away.
 
@@ -341,7 +369,8 @@ These are what make narrow pinning pay off:
 | Editing production code to make a fixture work | Change the introspector or `instantiate`; if truly blocked, ask |
 | Fixing a bug the new test exposed | Report it and leave the test failing |
 | Reaching for `FailoverIntrospector` by default | Pick the one matching introspector; override odd types individually |
-| A helper that just renames a selector | Inline `javaGetter(Type::prop)` — share at the `ArbitraryBuilder` level only |
+| A helper that just renames a selector | Inline `javaGetter(Type::prop)`. A shared path *prefix* is fine — the call site still shows the leaf |
+| Wrapping every pre-built value in `Values.just` | Only when that exact instance is what the case is about |
 | Configuration the outcome depends on hidden in a shared holder | Declare the `FixtureMonkey` in the test class |
 | Restating a production validation annotation as an `Arbitrary` in the test | Add the validation plugin and let the annotation drive generation |
 | `setPostCondition` to filter a domain rule the type always obeys | `register` the type, so no test repeats it |

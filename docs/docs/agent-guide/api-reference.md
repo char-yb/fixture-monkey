@@ -45,6 +45,17 @@ import static com.navercorp.fixturemonkey.api.expression.JavaGetterMethodPropert
 
 There is a deprecated `javaGetter` in the `...api.experimental` package. Import from `...api.expression`.
 
+Selectors are values, and `into` returns a **new** selector wrapping its receiver rather than mutating it. A path prefix that many pins share can therefore be held in a constant and reused without the accumulation hazard that makes a shared `ArbitraryBuilder` unsafe:
+
+```java
+private static final JavaGetterMethodPropertySelector<JiraIssueResponse, JiraFields> FIELDS =
+    javaGetter(JiraIssueResponse::fields);
+
+.set(FIELDS.into(JiraFields::status).into(JiraIssueStatus::name), "Open")
+```
+
+Both types are public — `JavaGetterMethodPropertySelector<T, U>` for a root selector, `JoinJavaGetterPropertySelector<T, U>` for the result of `into` — so either can be named in a field or a return type. `into` itself is a default method inherited from a non-public interface, which does not prevent calling it or declaring those types from another package.
+
 ### Kotlin
 
 Requires `KotlinPlugin`. Import from `com.navercorp.fixturemonkey.kotlin`.
@@ -90,6 +101,24 @@ Avoid them in agent-written code. They break silently on rename, and an unmatche
 | `build()` | Returns the underlying `Arbitrary` instead of sampling |
 | `copy()` | Returns an independent copy — the way to branch without affecting the original |
 
+### Ordering: the last call on an overlapping path wins
+
+Manipulators apply in call order, and two of the resulting rules break silently.
+
+`size` must precede element writes, or the elements land on a collection that may be too short and are dropped.
+
+And where two calls overlap, the later one decides — including across a parent and its child, where it determines whether the parent exists at all:
+
+```java
+.setNull(javaGetter(Order::getCustomer))
+.set(javaGetter(Order::getCustomer).into(Customer::getName), "Kim")   // parent revived, name set
+
+.set(javaGetter(Order::getCustomer).into(Customer::getName), "Kim")
+.setNull(javaGetter(Order::getCustomer))                             // parent null, the name pin is gone
+```
+
+The first order is what lets a shared base fixture null a subtree and have each case revive only the part it needs. The second discards the pin without an exception. Sharing setup as a method that returns a builder gives the correct order for free, because the case's own calls always come after.
+
 ### `ArbitraryBuilder` is mutable
 
 `set`, `size`, `setNull`, `thenApply`, `fixed` and the rest **mutate the builder and return `this`**, and `sample()` does not reset it. Only `copy()`, `map()`, and `zipWith()` hand back a new instance.
@@ -115,8 +144,10 @@ If a builder must be held, call `copy()` before customizing it.
 
 From `com.navercorp.fixturemonkey.customizer.Values`:
 
-- `Values.just(value)` — set the value as-is. Without it, `set` decomposes the object and regenerates its properties, which matters for immutable and inlined types.
+- `Values.just(value)` — place the value as-is, blocking decomposition. **Use it only when fixing that exact instance is genuinely required.**
 - `Values.unique(supplier)` — draw a distinct value per generation, for uniquely-constrained columns.
+
+Plain `set` decomposes the value and regenerates its properties, so a pre-built list or nested object comes back with different inner values and nothing is raised to say so. That silence is worth recognising, but it is not by itself a reason to wrap: if the assertion does not depend on those inner values, plain `set` is the correct call and leaves them random. `Values.just` freezes a subtree, which carries the same cost as `fixed()` — the frozen part stops exploring — so reserve it for the case where the exact instance is the thing under test.
 
 ## Constraining generated values
 
@@ -153,6 +184,7 @@ Random does not have to mean arbitrary. These are the APIs that narrow what gene
 | `new DataFakerPlugin()` | Realistic values — names, addresses, and similar |
 
 An unsatisfiable constraint is not silent: generation retries and then throws `RetryableFilterMissException`, naming the property that could not be produced.
+
 ## How objects get constructed
 
 This is the most common source of "Fixture Monkey does not work on my class". Different class shapes are constructed in completely different ways, and the mechanism is chosen at three levels of scope. Work from the narrowest scope that solves the problem.
