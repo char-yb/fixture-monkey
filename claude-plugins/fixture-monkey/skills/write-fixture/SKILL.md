@@ -2,7 +2,7 @@
 name: write-fixture
 description: 'Write Java/Kotlin tests with Fixture Monkey — enumerate the cases a method can produce, pick the ones worth testing, and build each fixture pinning only the properties that force the expected outcome.'
 when_to_use: 'Use when writing or adding tests for a Java or Kotlin method; when a test needs an object to test with; when replacing hand-built test objects, `new` calls, or test builders with Fixture Monkey; when a Fixture Monkey object fails to generate or its properties come back null; or when reviewing a test whose fixture sets more than the scenario needs. Example requests — "write tests for OrderService.calculate", "add test cases for this method", "why is Fixture Monkey not generating this record", "this test sets way too many fields".'
-allowed-tools: WebFetch(domain:naver.github.io)
+allowed-tools: WebFetch(domain:naver.github.io), Bash(jshell *), Bash(./gradlew *), Bash(mvn *)
 ---
 
 # Writing tests with Fixture Monkey
@@ -245,6 +245,9 @@ Past that, construction is a subject of its own — an introspector per class sh
 | **A `set` is silently ignored** — some fields populated, others null, or an NPE in production code on a field the test pinned | The introspector never writes that property. There is no exception to hunt for |
 | Works everywhere except one class | Needs a per-type override, or `instantiate` on the one builder |
 | Wrong constructor picked, or a `set` on a constructor parameter ignored | Needs `instantiate(constructor().parameter(...))`, or `-parameters` |
+| Having to choose between introspectors, or order a `FailoverIntrospector` | That file measures it instead of guessing |
+
+The last row is worth knowing about before you need it: the skill bundles `${CLAUDE_SKILL_DIR}/scripts/introspector-probe.jsh`, which runs every candidate introspector against the real class and reports, per type, which ones build it and which properties each leaves unwritten.
 
 ## Stubs follow the same rule
 
@@ -340,6 +343,8 @@ This file carries the procedure and the syntax most fixtures need. Two kinds of 
 | Path | Contents |
 | :--- | :--- |
 | `${CLAUDE_SKILL_DIR}/references/object-construction.md` | Introspector per class shape, the three scopes, the failover trap, the diagnosing table. Read it on the symptoms listed under *When the object will not build* |
+| `${CLAUDE_SKILL_DIR}/scripts/introspector-probe.jsh` | Measures which introspectors build a type and what each leaves unwritten |
+| `${CLAUDE_SKILL_DIR}/scripts/print-test-classpath.gradle` | Prints a module's test runtime classpath for the probe, without editing the build |
 
 **Online**, for anything beyond both — the single source these rules are maintained in. **Use the `.md` URLs**, which serve the source text; dropping the suffix gives the rendered page, wrapped in site navigation you do not need:
 

@@ -122,6 +122,37 @@ From `com.navercorp.fixturemonkey.customizer.Values`:
 
 This is the most common source of "Fixture Monkey does not work on my class". Different class shapes are constructed in completely different ways, and the mechanism is chosen at three levels of scope. Work from the narrowest scope that solves the problem.
 
+### Measure the candidates before classifying
+
+The tables in this section classify a class by its shape, and that classification is a guess. It is right most of the time and silently wrong on precisely the cases that cost the most — a type that *is* built, by an introspector that never writes half of it.
+
+The guess is avoidable. Every introspector can be run against the real class in about two seconds, using nothing but `jshell` and the module's test runtime classpath. Three outcomes matter per candidate: it cannot build the type at all, it builds it but leaves some properties unwritten, or it writes everything.
+
+```java
+FixtureMonkey sut = FixtureMonkey.builder()
+    .objectIntrospector(candidate)
+    .defaultNotNull(true)
+    .build();
+
+Object sample = sut.giveMeOne(Order.class);   // null means this candidate cannot build it
+```
+
+Then read every declared field back by reflection. A field still holding its JVM default was never written — **and a `set` targeting it would be dropped with no exception and no warning.** Two details keep that inference honest:
+
+- **Numbers and booleans need sentinels.** `0` and `false` are legitimate random values, so an unwritten `int` is indistinguishable from a written one. Push a constant for each primitive and wrapper first, and the default becomes proof of absence: `pushExactTypeArbitraryIntrospector(int.class, context -> new ArbitraryIntrospectorResult(CombinableArbitrary.from(7)))`.
+- **Reference types need repetition.** Some values generate as `null` some of the time regardless of the introspector, and `defaultNotNull(true)` does not always override it — `ZoneId` is one. Sample about five times and separate *always* default, which is the introspector, from *sometimes* default, which is nullability and needs a pin instead.
+
+The [Claude Code plugin](https://github.com/naver/fixture-monkey/tree/main/claude-plugins/fixture-monkey/skills/write-fixture/scripts) bundles this as a ready `jshell` script plus a Gradle init script that prints a module's test runtime classpath without touching the build files. Where `jshell` is unavailable it is a JDK 9+ tool, and the classification tables below remain the fallback.
+
+#### Choosing when several candidates work
+
+More than one introspector usually writes everything, and that is not a reason to combine them:
+
+1. **One candidate is complete for every type under test** — set it globally with `objectIntrospector(...)`. This is the common outcome.
+2. **Several cover every type** — take the one that names how the class is actually built: `ConstructorProperties` for records and immutables, `Bean` for JavaBeans, `PrimaryConstructor` for Kotlin. Rank `PriorityConstructor` and `Jackson` last, since they can succeed for reasons unrelated to the class's intended shape.
+3. **Different types need different introspectors** — the one covering the most types globally, plus a [Level 2](#level-2--per-type) override per exception. Two or three overrides beat a chain.
+4. **The exceptions are too numerous to enumerate** — only then a `FailoverIntrospector`, measured rather than assumed. Probing the chain as a single candidate turns [the ordering trap](#the-failover-ordering-trap) into an observation: the same two introspectors leave a field unwritten in one order and write it in the other.
+
 ### Level 1 — the introspector (global default)
 
 The introspector decides how *every* class is built. `FixtureMonkey.create()` uses `BeanArbitraryIntrospector`, which needs a no-arg constructor and setters — that is why records and immutable classes fail out of the box.
@@ -224,6 +255,8 @@ new FailoverIntrospector(List.of(
 ```
 
 `useExpressionStrictMode()` does **not** catch this. The path resolves to a real property; the introspector simply never writes it.
+
+Which order is correct is measurable rather than arguable — probe the chain as a single candidate, as described [above](#measure-the-candidates-before-classifying), and read off which fields each ordering leaves unwritten.
 
 After configuring a `FixtureMonkey`, sample one instance of each type and assert that the pins landed. A dropped pin is silent, so this throwaway check is the cheapest way to find it:
 

@@ -6,6 +6,63 @@ Different class shapes are built in completely different ways, and this is the m
 
 When construction does fail, fix it at the narrowest scope that works.
 
+## Probe the candidates instead of guessing
+
+Classifying by class shape is a guess. The tables below are right most of the time and silently wrong on exactly the cases that cost the most. When `jshell` is on the PATH, measure instead: it reports, per type, which introspectors build it and which properties each one leaves unwritten. A probe takes about two seconds.
+
+**If `jshell` is unavailable, skip this and classify from the tables.** It ships with JDK 9+; nothing else here depends on it.
+
+Set `SKILL_DIR` first. It is the directory holding this file's parent — the absolute path you just read this file from, minus `/references/object-construction.md`. Do not use a relative path: the working directory is the project, not the skill.
+
+```bash
+SKILL_DIR=<absolute path to the skill directory>
+
+# 1. the module's test runtime classpath — registers a task, edits no project file
+./gradlew -q -I "$SKILL_DIR/scripts/print-test-classpath.gradle" :module:fmPrintTestClasspath \
+  | sed -n '/FM_CLASSPATH_BEGIN/,/FM_CLASSPATH_END/p' | sed -n '2p' > /tmp/fm-cp.txt
+
+# Maven: mvn -q test-compile dependency:build-classpath -Dmdep.outputFile=/tmp/fm-dep.txt
+#        echo "target/classes:target/test-classes:$(cat /tmp/fm-dep.txt)" > /tmp/fm-cp.txt
+
+# 2. probe the types the test touches
+jshell -q --class-path "$(cat /tmp/fm-cp.txt)" \
+  -R-Dfm.targets=com.example.Order,com.example.Customer \
+  "$SKILL_DIR/scripts/introspector-probe.jsh" 2>&1 | grep '^FM>'
+```
+
+```
+FM> TYPE com.example.Order fields=7
+FM>   COMPLETE  BeanArbitraryIntrospector
+FM>   PARTIAL   ConstructorPropertiesArbitraryIntrospector -- never written: [id, createdAt]
+FM>   FAIL      BuilderArbitraryIntrospector -- generated null -- this introspector does not build the type
+```
+
+| Row | Means |
+| :--- | :--- |
+| `COMPLETE` | Built the type and wrote every field. Usable |
+| `PARTIAL` | Built the type but never wrote the listed fields — **a `set` on one of those is dropped silently** |
+| `FAIL` | Cannot build the type at all. Loud, so it is the safe kind of wrong |
+| `sometimes null: x(2/5)` | Generation nulls that field some of the time, whichever introspector runs. An introspector choice does not fix it — handle it as nullability, per `SKILL.md` |
+
+`KotlinPlugin` is applied automatically for Kotlin types, and the Kotlin introspectors are probed for them. Add `-R-Dfm.plugins=com.navercorp.fixturemonkey.jackson.JacksonPlugin` for plugin-provided introspectors that need their plugin registered.
+
+**When several introspectors come back `COMPLETE`** — the usual case — do not pick arbitrarily, and do not reach for a chain merely because there is more than one row:
+
+1. **One is `COMPLETE` for every probed type** → set it globally with `objectIntrospector(...)`. This is the common outcome and the end of the decision.
+2. **Several cover every type** → take the one that names how the class is really built: `ConstructorProperties` for records and immutables, `Bean` for JavaBeans, `PrimaryConstructor` for Kotlin. Rank `PriorityConstructor` and `Jackson` last — they can succeed for reasons unrelated to the class's intended shape.
+3. **Different types want different introspectors** → the one covering the most types globally, plus `pushAssignableTypeArbitraryIntrospector(Odd.class, ...)` per exception (level 2). Two or three overrides beat a chain.
+4. **The exceptions are too numerous to enumerate** → only now `FailoverIntrospector`, and probe the chain itself before trusting it:
+
+```bash
+jshell -q --class-path "$(cat /tmp/fm-cp.txt)" -R-Dfm.targets=com.example.Order \
+  -R-Dfm.failover=FieldReflectionArbitraryIntrospector,ConstructorPropertiesArbitraryIntrospector \
+  "$SKILL_DIR/scripts/introspector-probe.jsh" 2>&1 | grep '^FM>'
+```
+
+The ordering trap described below stops being a judgement call once probed: the same two introspectors report `PARTIAL` in one order and `COMPLETE` in the other. Reorder until every type reports `COMPLETE`; if no order does, go back to option 3.
+
+`-R-Dfm.introspector=<name>` probes a single choice, to confirm the final configuration in one line. None of this replaces the sampled assertion in `SKILL.md` step 6 — the probe measures what the introspector *can* write, that check confirms **your** pins landed.
+
 ## Level 1 — the introspector, global
 
 `FixtureMonkey.create()` defaults to `BeanArbitraryIntrospector`, which needs a no-arg constructor and setters. That is why records and immutable classes fail out of the box.
@@ -90,7 +147,7 @@ Naming a parameter — `.parameter(String.class, "name")` — is what makes `set
 
 | Symptom | Fix |
 | :--- | :--- |
-| **A `set` is silently ignored — some fields populated, others null, or an NPE in production code on a field the test pinned** | The introspector never writes that property. `ConstructorProperties` writes only constructor parameters. Do not hunt for an exception; suspect the introspector |
+| **A `set` is silently ignored — some fields populated, others null, or an NPE in production code on a field the test pinned** | The introspector never writes that property. `ConstructorProperties` writes only constructor parameters. Do not hunt for an exception; probe the type and look for `PARTIAL` |
 | All properties null or default, or fails on a record | Introspector does not fit the class shape — see level 1 |
 | Works everywhere except one class | Override that type (level 2) or `instantiate` (level 3) |
 | Wrong constructor picked | `constructor().parameter(...)` naming the signature |

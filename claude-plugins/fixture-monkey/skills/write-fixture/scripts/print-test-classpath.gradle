@@ -1,0 +1,22 @@
+// Prints a module's test runtime classpath, for feeding to jshell. Registers a task
+// rather than editing the build, so the project's own files stay untouched:
+//
+//   ./gradlew -q -I print-test-classpath.gradle :module:fmPrintTestClasspath
+//
+// dependsOn(cp) builds the jars the runtime classpath points at; whatever is still
+// missing afterwards is filtered out, because jshell refuses a classpath entry that
+// does not exist.
+
+allprojects { project ->
+	project.plugins.withId('java') {
+		project.tasks.register('fmPrintTestClasspath') { task ->
+			def cp = project.sourceSets.test.runtimeClasspath
+			task.dependsOn(cp)
+			task.doLast {
+				println "FM_CLASSPATH_BEGIN"
+				println cp.files.findAll { it.exists() }.join(File.pathSeparator)
+				println "FM_CLASSPATH_END"
+			}
+		}
+	}
+}
